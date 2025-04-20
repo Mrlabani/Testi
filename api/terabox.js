@@ -1,86 +1,92 @@
-const axios = require("axios");
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+import requests
+from datetime import datetime
 
-const cookies = {
-  ndus: "YvuYYdkpeHuihGw9OEigqSKA9NybL_DX5x74XMDz",
-  ndut_fmt: "4CC0910C280E2FCEAFE54757CB673582F6AD3599E7774017843952D6EC551A16",
-  browserid: "oIGAo4oY1Id2W3x1tciwWVawHj8vEf1jK48QhN6lbQmpu2jagQsDrYYzXOU=",
-  lang: "en",
-};
+app = FastAPI()
 
-const headers = {
-  "User-Agent": "Mozilla/5.0",
-  Referer: "https://terabox.com",
-};
+@app.get("/")
+async def get_terabox_info(
+    url: str = Query(..., description="The Terabox share URL"),
+    pwd: str = Query(None, description="Optional password for the shared file")
+):
+    # Regex to validate Terabox URLs
+    import re
+    terabox_url_regex = r'^https:\/\/(terabox\.com|1024terabox\.com)\/s\/([A-Za-z0-9-_]+)$'
+    match = re.match(terabox_url_regex, url)
 
-module.exports = async (req, res) => {
-  const shareUrl = req.query.url;
-  if (!shareUrl || !shareUrl.includes("terabox.com/s/")) {
-    return res.status(400).json({ error: "Invalid Terabox share URL" });
-  }
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid Terabox URL format.")
 
-  try {
-    const cookieHeader = Object.entries(cookies)
-      .map(([k, v]) => `${k}=${v}`)
-      .join("; ");
+    shorturl = match.group(2)
 
-    const htmlRes = await axios.get(shareUrl, {
-      headers: {
-        ...headers,
-        Cookie: cookieHeader,
-      },
-    });
+    try:
+        # Step 1: Get file info
+        info_url = "https://terabox.hnn.workers.dev/api/get-info"
+        info_params = {'shorturl': shorturl, 'pwd': pwd}
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': '*/*'
+        }
 
-    const match = htmlRes.data.match(/window\.preload\s*=\s*(\{.*?\});/);
-    if (!match) {
-      return res.status(500).json({ error: "Failed to extract metadata" });
-    }
+        info_response = requests.get(info_url, params=info_params, headers=headers)
 
-    const preload = JSON.parse(match[1]);
-    const file = preload?.shareInfo?.file_list?.[0];
-    const fs_id = file?.fs_id;
-    const uk = preload?.shareInfo?.uk;
-    const shareid = preload?.shareInfo?.share_id;
+        if info_response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to fetch file info.")
 
-    if (!fs_id || !uk || !shareid) {
-      return res.status(500).json({ error: "Missing file metadata" });
-    }
+        info_data = info_response.json()
+        if not info_data.get('ok'):
+            raise HTTPException(status_code=500, detail="Error from get-info API.")
 
-    const params = {
-      app_id: "250528",
-      channel: "dubox",
-      clienttype: "0",
-      web: "1",
-      shareid,
-      uk,
-      fid_list: `[${fs_id}]`,
-    };
+        shareid = info_data['shareid']
+        uk = info_data['uk']
+        sign = info_data['sign']
+        timestamp = info_data['timestamp']
+        file_list = info_data['list']
 
-    const dlinkRes = await axios.get("https://terabox.com/api/sharedownload", {
-      headers: {
-        ...headers,
-        Cookie: cookieHeader,
-      },
-      params,
-    });
+        if not file_list:
+            raise HTTPException(status_code=404, detail="No files found in the provided URL.")
 
-    const dlink = dlinkRes.data?.list?.[0]?.dlink;
-    if (!dlink) return res.status(500).json({ error: "Download link not found" });
+        file = file_list[0]
+        fs_id = file['fs_id']
+        filename = file['filename']
+        size = int(file['size'])
+        create_time = int(file['create_time'])
+        category = file['category']
 
-    const finalRes = await axios.get(dlink, {
-      maxRedirects: 0,
-      validateStatus: status => status === 302,
-      headers: {
-        ...headers,
-        Cookie: cookieHeader,
-      },
-    });
+        # Step 2: Get download link
+        download_url = "https://terabox.hnn.workers.dev/api/get-download"
+        download_data = {
+            'shareid': shareid,
+            'uk': uk,
+            'sign': sign,
+            'timestamp': timestamp,
+            'fs_id': fs_id
+        }
 
-    const realUrl = finalRes.headers?.location;
-    if (!realUrl) return res.status(500).json({ error: "Failed to fetch final URL" });
+        download_response = requests.post(download_url, json=download_data, headers=headers)
 
-    return res.status(200).json({ direct_link: realUrl });
-  } catch (err) {
-    console.error(err.message);
-    return res.status(500).json({ error: "Something went wrong" });
-  }
-};
+        if download_response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to fetch download link.")
+
+        download_data = download_response.json()
+        if not download_data.get('ok'):
+            raise HTTPException(status_code=500, detail="Error from get-download API.")
+
+        download_link = download_data['downloadLink']
+
+        # Step 3: Respond with file details
+        response_data = {
+            "ok": True,
+            "filename": filename,
+            "size": f"{round(size / (1024 * 1024), 2)} MB",
+            "category": category,
+            "create_time": datetime.utcfromtimestamp(create_time).isoformat() + "Z",
+            "downloadLink": download_link,
+            "Dev": "pikachufrombd.t.me"
+        }
+        return JSONResponse(content=response_data, status_code=200)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
