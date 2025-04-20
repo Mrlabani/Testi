@@ -1,0 +1,9 @@
+{
+  "name": "terabox-direct-link-api",
+  "version": "1.0.0",
+  "description": "Get direct download link from Terabox share URL",
+  "main": "api/terabox.js",
+  "dependencies": {
+    "axios": "^1.6.7"
+  }
+}
